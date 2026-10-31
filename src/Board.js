@@ -4,14 +4,14 @@ import 'dragula/dist/dragula.css';
 import Swimlane from './Swimlane';
 import './Board.css';
 
+const API_URL = 'http://localhost:3001/api/v1/clients';
+
 export default class Board extends React.Component {
   constructor(props) {
     super(props);
-    // Per the ticket, every task starts in the backlog swimlane.
-    const clients = this.getClients().map(client => ({ ...client, status: 'backlog' }));
     this.state = {
       clients: {
-        backlog: clients,
+        backlog: [],
         inProgress: [],
         complete: [],
       }
@@ -29,7 +29,8 @@ export default class Board extends React.Component {
       this.swimlanes.inProgress.current,
       this.swimlanes.complete.current,
     ]);
-    this.drake.on('drop', () => this.handleDrop());
+    this.drake.on('drop', (el) => this.handleDrop(el));
+    this.loadClients();
   }
 
   componentWillUnmount() {
@@ -38,9 +39,29 @@ export default class Board extends React.Component {
     }
   }
 
+  // Load all clients from the backend and group them into swimlanes,
+  // ordered by priority (1 = top of the lane).
+  loadClients() {
+    return fetch(API_URL)
+      .then(response => response.json())
+      .then(clients => this.setClientsFromList(clients))
+      .catch(error => console.error('Could not load clients', error));
+  }
+
+  setClientsFromList(clients) {
+    const byPriority = (a, b) => a.priority - b.priority;
+    this.setState({
+      clients: {
+        backlog: clients.filter(c => c.status === 'backlog').sort(byPriority),
+        inProgress: clients.filter(c => c.status === 'in-progress').sort(byPriority),
+        complete: clients.filter(c => c.status === 'complete').sort(byPriority),
+      },
+    });
+  }
+
   // Read the card order Dragula produced in the DOM, then revert Dragula's DOM
   // change and let React re-render from state (keeps React as source of truth).
-  handleDrop() {
+  handleDrop(el) {
     const laneStatus = {
       backlog: 'backlog',
       inProgress: 'in-progress',
@@ -49,7 +70,7 @@ export default class Board extends React.Component {
     const order = {};
     Object.keys(laneStatus).forEach(lane => {
       order[lane] = Array.from(this.swimlanes[lane].current.children)
-        .map(el => el.getAttribute('data-id'));
+        .map(card => card.getAttribute('data-id'));
     });
     this.drake.cancel(true);
 
@@ -64,41 +85,34 @@ export default class Board extends React.Component {
         .map(id => ({ ...byId[id], status: laneStatus[lane] }));
     });
     this.setState({ clients });
-  }
 
-  getClients() {
-    return [
-      ['1', 'Stark, White and Abbott', 'Cloned Optimal Architecture', 'in-progress'],
-      ['2', 'Wiza LLC', 'Exclusive Bandwidth-Monitored Implementation', 'complete'],
-      ['3', 'Nolan LLC', 'Vision-Oriented 4Thgeneration Graphicaluserinterface', 'backlog'],
-      ['4', 'Thompson PLC', 'Streamlined Regional Knowledgeuser', 'in-progress'],
-      ['5', 'Walker-Williamson', 'Team-Oriented 6Thgeneration Matrix', 'in-progress'],
-      ['6', 'Boehm and Sons', 'Automated Systematic Paradigm', 'backlog'],
-      ['7', 'Runolfsson, Hegmann and Block', 'Integrated Transitional Strategy', 'backlog'],
-      ['8', 'Schumm-Labadie', 'Operative Heuristic Challenge', 'backlog'],
-      ['9', 'Kohler Group', 'Re-Contextualized Multi-Tasking Attitude', 'backlog'],
-      ['10', 'Romaguera Inc', 'Managed Foreground Toolset', 'backlog'],
-      ['11', 'Reilly-King', 'Future-Proofed Interactive Toolset', 'complete'],
-      ['12', 'Emard, Champlin and Runolfsdottir', 'Devolved Needs-Based Capability', 'backlog'],
-      ['13', 'Fritsch, Cronin and Wolff', 'Open-Source 3Rdgeneration Website', 'complete'],
-      ['14', 'Borer LLC', 'Profit-Focused Incremental Orchestration', 'backlog'],
-      ['15', 'Emmerich-Ankunding', 'User-Centric Stable Extranet', 'in-progress'],
-      ['16', 'Willms-Abbott', 'Progressive Bandwidth-Monitored Access', 'in-progress'],
-      ['17', 'Brekke PLC', 'Intuitive User-Facing Customerloyalty', 'complete'],
-      ['18', 'Bins, Toy and Klocko', 'Integrated Assymetric Software', 'backlog'],
-      ['19', 'Hodkiewicz-Hayes', 'Programmable Systematic Securedline', 'backlog'],
-      ['20', 'Murphy, Lang and Ferry', 'Organized Explicit Access', 'backlog'],
-    ].map(companyDetails => ({
-      id: companyDetails[0],
-      name: companyDetails[1],
-      description: companyDetails[2],
-      status: companyDetails[3],
-    }));
+    // Save the move: new status and 1-based position in the lane the card landed in.
+    const id = el.getAttribute('data-id');
+    const droppedLane = Object.keys(laneStatus).find(lane => order[lane].includes(id));
+    const status = laneStatus[droppedLane];
+    const priority = order[droppedLane].indexOf(id) + 1;
+    fetch(`${API_URL}/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, priority }),
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Update failed with status ${response.status}`);
+        }
+        return response.json();
+      })
+      // The server returns every client, so resync with what was actually saved.
+      .then(clients => this.setClientsFromList(clients))
+      .catch(error => {
+        console.error('Could not save move, reloading board', error);
+        this.loadClients();
+      });
   }
 
   renderSwimlane(name, clients, ref) {
     return (
-      <Swimlane name={name} clients={clients} dragulaRef={ref} />
+      <Swimlane name={name} clients={clients} dragulaRef={ref}/>
     );
   }
 
